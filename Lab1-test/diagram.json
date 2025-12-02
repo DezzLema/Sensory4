@@ -1,32 +1,47 @@
 {
   "version": 1,
-  "author": "Roman Zhitkov",
+  "author": "DezzLem",
   "editor": "wokwi",
   "parts": [
-    { "type": "wokwi-esp32-devkit-v1", "id": "esp", "top": 0, "left": 0, "attrs": {} },
-    {
-      "type": "wokwi-pushbutton",
-      "id": "btn1",
-      "top": 246.2,
-      "left": 96,
-      "attrs": { "color": "green", "xray": "1" }
-    },
+    { "type": "board-esp32-h2-devkitm-1", "id": "esp", "top": 0, "left": 0, "attrs": {} },
+    { "type": "wokwi-ky-040", "id": "encoder1", "top": 126.5, "left": -202.4, "attrs": {} },
     {
       "type": "wokwi-led-ring",
       "id": "ring1",
-      "top": -173.69,
-      "left": -378.78,
+      "top": -250.49,
+      "left": -397.98,
       "attrs": { "pixels": "37" }
+    },
+    {
+      "type": "wokwi-pushbutton",
+      "id": "btn1",
+      "top": 179,
+      "left": 182.4,
+      "attrs": { "color": "red" }
+    },
+    {
+      "type": "wokwi-resistor",
+      "id": "r1",
+      "top": 243.95,
+      "left": 96,
+      "attrs": { "value": "10000" }
     }
   ],
   "connections": [
-    [ "esp:TX0", "$serialMonitor:RX", "", [] ],
-    [ "esp:RX0", "$serialMonitor:TX", "", [] ],
-    [ "btn1:1.l", "esp:D5", "green", [ "h-28.8", "v-28.8" ] ],
-    [ "esp:GND.1", "btn1:2.l", "black", [ "h0" ] ],
-    [ "ring1:VCC", "esp:3V3", "red", [ "v96", "h240", "v-76.8", "h-28.8" ] ],
-    [ "ring1:GND", "esp:GND.2", "black", [ "v76.8", "h220.8", "v-57.6", "h-48" ] ],
-    [ "ring1:DIN", "esp:D13", "yellow", [ "v19.2", "h201.6", "v-48", "h-28.8" ] ]
+    [ "esp:TX", "$serialMonitor:RX", "", [] ],
+    [ "esp:RX", "$serialMonitor:TX", "", [] ],
+    [ "esp:GPIO4", "encoder1:CLK", "green", [ "v67.2", "h192" ] ],
+    [ "esp:GPIO5", "encoder1:DT", "blue", [ "v76.8", "h182.4" ] ],
+    [ "esp:GPIO6", "encoder1:SW", "yellow", [ "v86.4", "h172.8" ] ],
+    [ "esp:3V3", "encoder1:VCC", "red", [ "v96", "h163.2" ] ],
+    [ "esp:GND", "encoder1:GND", "black", [ "v105.6", "h153.6" ] ],
+    [ "esp:GPIO7", "ring1:DIN", "white", [ "v-28.8", "h115.2", "v-76.8", "h-48" ] ],
+    [ "esp:3V3", "ring1:VCC", "red", [ "v-38.4", "h-81.9", "v69.43", "h-192" ] ],
+    [ "esp:GND.1", "ring1:GND", "black", [ "v-48", "h134.4", "v-57.6", "h-67.2" ] ],
+    [ "esp:GPIO8", "btn1:1.r", "orange", [ "v28.8", "h48" ] ],
+    [ "r1:1", "btn1:1.l", "orange", [ "v9.6", "h9.6" ] ],
+    [ "r1:2", "esp:3V3", "orange", [ "v19.2", "h9.6" ] ],
+    [ "esp:GND.2", "btn1:2.l", "black", [ "v48", "h28.8" ] ]
   ],
   "dependencies": {}
 }
