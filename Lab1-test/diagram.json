@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "author": "Roman Zhitkov",
+  "editor": "wokwi",
+  "parts": [
+    { "type": "wokwi-esp32-devkit-v1", "id": "esp", "top": 0, "left": 0, "attrs": {} },
+    {
+      "type": "wokwi-pushbutton",
+      "id": "btn1",
+      "top": 246.2,
+      "left": 96,
+      "attrs": { "color": "green", "xray": "1" }
+    },
+    {
+      "type": "wokwi-led-ring",
+      "id": "ring1",
+      "top": -173.69,
+      "left": -378.78,
+      "attrs": { "pixels": "37" }
+    }
+  ],
+  "connections": [
+    [ "esp:TX0", "$serialMonitor:RX", "", [] ],
+    [ "esp:RX0", "$serialMonitor:TX", "", [] ],
+    [ "btn1:1.l", "esp:D5", "green", [ "h-28.8", "v-28.8" ] ],
+    [ "esp:GND.1", "btn1:2.l", "black", [ "h0" ] ],
+    [ "ring1:VCC", "esp:3V3", "red", [ "v96", "h240", "v-76.8", "h-28.8" ] ],
+    [ "ring1:GND", "esp:GND.2", "black", [ "v76.8", "h220.8", "v-57.6", "h-48" ] ],
+    [ "ring1:DIN", "esp:D13", "yellow", [ "v19.2", "h201.6", "v-48", "h-28.8" ] ]
+  ],
+  "dependencies": {}
+}
