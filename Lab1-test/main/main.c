@@ -38,7 +38,7 @@ typedef enum {
     STATE_SPINNING,
     STATE_SLOWING,
     STATE_STOPPED,
-    STATE_FINAL_STOP  // Новое состояние для полной остановки
+    STATE_FINAL_STOP
 } game_state_t;
 
 // Цвета
@@ -67,6 +67,10 @@ static float target_speed = 50.0f;
 static const float acceleration = 0.1f;
 static uint64_t slowing_start_time = 0;
 static uint64_t stopped_start_time = 0;
+static uint64_t spin_start_time = 0;  // Время начала вращения
+
+// Таймаут для принудительной остановки (10 секунд)
+#define FORCE_STOP_TIMEOUT 10000000  // 10 секунд в микросекундах
 
 // Буферы
 static rgb_color_t led_buffer[NUM_LEDS];
@@ -82,6 +86,7 @@ static void render_frame(void);
 static void send_led_data(void);
 static int get_led_index(float position);
 static void start_spin(void);
+static void force_stop(void);  // Функция принудительной остановки
 static void encoder_isr_handler(void* arg);
 static void roulette_task(void* arg);
 
@@ -258,7 +263,34 @@ static void start_spin(void) {
     wheel_speed = target_speed;
     ball_speed = -target_speed * 1.2f;
     slowing_start_time = esp_timer_get_time();
+    spin_start_time = esp_timer_get_time();  // Запоминаем время старта
     ESP_LOGI(TAG, "Spin started! Speed: %.1f°/s", target_speed);
+    ESP_LOGI(TAG, "Force stop in 10 seconds");
+}
+
+static void force_stop(void) {
+    // ПРИНУДИТЕЛЬНАЯ ОСТАНОВКА
+    // НЕ меняем ball_position! Оставляем его там, где он уже находится
+    wheel_speed = 0.0f;
+    ball_speed = 0.0f;
+    
+    game_state = STATE_FINAL_STOP;
+    
+    // Определяем на каком светодиоде остановился шарик
+    int ball_led = get_led_index(ball_position);
+    ESP_LOGI(TAG, "FORCE STOP! Ball stopped at LED %d (position: %.2f°)", ball_led, ball_position);
+    
+    // Определяем цвет выигрышного сектора
+    int wheel_offset = get_led_index(wheel_position);
+    int source_pos = (NUM_LEDS + ball_led - wheel_offset) % NUM_LEDS;
+    
+    if (source_pos == GREEN_POS) {
+        ESP_LOGI(TAG, "Result: GREEN!");
+    } else if (led_buffer[source_pos].r == 255) {
+        ESP_LOGI(TAG, "Result: RED!");
+    } else {
+        ESP_LOGI(TAG, "Result: BLACK!");
+    }
 }
 
 static void update_rotation(void) {
@@ -272,10 +304,17 @@ static void update_rotation(void) {
     
     float delta_time = (now - last_update_time) / 1000000.0f;
     
+    // Проверка таймаута 10 секунд
+    if ((game_state == STATE_SPINNING || game_state == STATE_SLOWING || game_state == STATE_STOPPED) &&
+        (now - spin_start_time > FORCE_STOP_TIMEOUT)) {
+        ESP_LOGI(TAG, "10 second timeout reached, forcing stop!");
+        force_stop();
+    }
+    
     switch (game_state) {
         case STATE_IDLE:
         case STATE_FINAL_STOP:
-            // Ничего не делаем
+            // Полная остановка - ничего не делаем
             break;
             
         case STATE_SPINNING:
@@ -286,57 +325,58 @@ static void update_rotation(void) {
             break;
             
         case STATE_SLOWING:
-            if (wheel_speed > 5.0f) {
-                wheel_speed -= acceleration * 0.5f;
-                ball_speed += acceleration * 0.4f;
+            wheel_speed -= acceleration * 0.5f;
+            ball_speed += acceleration * 0.4f;
+            
+            // Если скорости стали очень близки
+            if (fabsf(wheel_speed + ball_speed) < 2.0f) {
+                wheel_speed = 3.0f;
+                ball_speed = -3.0f;
+                game_state = STATE_STOPPED;
+                stopped_start_time = now;
                 
-                if (fabsf(wheel_speed + ball_speed) < 2.0f) {
-                    wheel_speed = 3.0f;
-                    ball_speed = -3.0f;
-                    game_state = STATE_STOPPED;
-                    stopped_start_time = now;
-                    
-                    int stop_position = esp_random() % NUM_LEDS;
-                    ball_position = stop_position * (360.0f / NUM_LEDS);
-                    
-                    ESP_LOGI(TAG, "Ball stopped at LED %d", stop_position);
-                    if (stop_position == GREEN_POS) {
-                        ESP_LOGI(TAG, "Result: GREEN!");
-                    } else if (led_buffer[stop_position].r == 255) {
-                        ESP_LOGI(TAG, "Result: RED!");
-                    } else {
-                        ESP_LOGI(TAG, "Result: BLACK!");
-                    }
-                }
+                // ЗАПОМИНАЕМ текущую позицию шарика, а не выбираем случайную!
+                ESP_LOGI(TAG, "Ball slowing down at LED %d", get_led_index(ball_position));
             }
             break;
             
         case STATE_STOPPED:
-            // Экспоненциальное замедление в течение 0.8 секунды
-            if (now - stopped_start_time < 800000) {
-                wheel_speed *= 0.9f;
-                ball_speed *= 0.9f;
-            }
-            // Затем ПРИНУДИТЕЛЬНАЯ остановка
-            else if (now - stopped_start_time < 1000000) {
+            // Быстрое замедление до полной остановки за 0.5 секунды
+            if (now - stopped_start_time < 500000) {
+                wheel_speed *= 0.8f;
+                ball_speed *= 0.8f;
+                
+                // Если скорости стали очень малы, останавливаем полностью
+                if (fabsf(wheel_speed) < 0.5f) wheel_speed = 0.0f;
+                if (fabsf(ball_speed) < 0.5f) ball_speed = 0.0f;
+            } else {
+                // Останавливаем полностью
                 wheel_speed = 0.0f;
                 ball_speed = 0.0f;
-            }
-            // И переходим в FINAL_STOP
-            else {
                 game_state = STATE_FINAL_STOP;
-                ESP_LOGI(TAG, "Fully stopped. Ready for next spin in 1 second");
+                
+                // Логируем финальную позицию
+                int ball_led = get_led_index(ball_position);
+                ESP_LOGI(TAG, "Fully stopped at LED %d. Ready for next spin", ball_led);
+                
+                // Определяем цвет выигрышного сектора
+                int wheel_offset = get_led_index(wheel_position);
+                int source_pos = (NUM_LEDS + ball_led - wheel_offset) % NUM_LEDS;
+                
+                if (source_pos == GREEN_POS) {
+                    ESP_LOGI(TAG, "Result: GREEN!");
+                } else if (led_buffer[source_pos].r == 255) {
+                    ESP_LOGI(TAG, "Result: RED!");
+                } else {
+                    ESP_LOGI(TAG, "Result: BLACK!");
+                }
             }
             break;
     }
     
-    // Обновление позиций только если скорости не нулевые
-    if (wheel_speed != 0.0f) {
-        wheel_position += wheel_speed * delta_time;
-    }
-    if (ball_speed != 0.0f) {
-        ball_position += ball_speed * delta_time;
-    }
+    // Обновление позиций ВСЕГДА
+    wheel_position += wheel_speed * delta_time;
+    ball_position += ball_speed * delta_time;
     
     // Нормализация углов
     wheel_position = fmodf(wheel_position, 360.0f);
@@ -360,19 +400,22 @@ static void render_frame(void) {
     // Отображаем шарик
     int ball_led = get_led_index(ball_position);
     
-    // ВСЕГДА БЕЛЫЙ ШАРИК, независимо от состояния
+    // Шарик всегда белый
     display_buffer[ball_led] = (rgb_color_t){255, 255, 255};
     
-    // Если всё остановилось, можно сделать дополнительную индикацию
+    // Если всё остановилось, делаем дополнительную индикацию
     if (game_state == STATE_FINAL_STOP) {
-        // Можно сделать мигание или другую индикацию, но шарик остается белым
-        // Например, можно сделать зеленый круг вокруг выигрышной позиции
-        if (led_buffer[get_led_index(ball_position)].r == 255) {
-            // Красный выигрыш - подсветить соседние светодиоды
-            int prev_led = (ball_led - 1 + NUM_LEDS) % NUM_LEDS;
-            int next_led = (ball_led + 1) % NUM_LEDS;
-            display_buffer[prev_led] = (rgb_color_t){100, 0, 0};
-            display_buffer[next_led] = (rgb_color_t){100, 0, 0};
+        // Ярче подсвечиваем выигрышный сектор
+        int winning_led = get_led_index(ball_position);
+        
+        for (int i = 0; i < NUM_LEDS; i++) {
+            int source_pos = (NUM_LEDS + i - wheel_offset) % NUM_LEDS;
+            if (source_pos == (winning_led - wheel_offset + NUM_LEDS) % NUM_LEDS) {
+                // Увеличиваем яркость выигрышного сектора
+                display_buffer[i].r = (uint8_t)fminf(display_buffer[i].r * 2.0f, 255);
+                display_buffer[i].g = (uint8_t)fminf(display_buffer[i].g * 2.0f, 255);
+                display_buffer[i].b = (uint8_t)fminf(display_buffer[i].b * 2.0f, 255);
+            }
         }
     }
 }
