@@ -9,11 +9,11 @@
 #include <math.h>
 #include "esp_timer.h"
 
-// Пины для ESP32-H2
+// Пины для ESP32-H2 (ИСПРАВЛЕННЫЕ согласно схеме)
 #define BUTTON_PIN GPIO_NUM_8      // Кнопка запуска (отдельная)
-#define ENCODER_CLK GPIO_NUM_4     // Энкодер CLK
-#define ENCODER_DT GPIO_NUM_5      // Энкодер DT  
-#define ENCODER_SW GPIO_NUM_6      // Кнопка энкодера
+#define ENCODER_CLK GPIO_NUM_9     // Энкодер CLK (было GPIO_NUM_4)
+#define ENCODER_DT GPIO_NUM_26     // Энкодер DT (было GPIO_NUM_5)  
+#define ENCODER_SW GPIO_NUM_27     // Кнопка энкодера (было GPIO_NUM_6)
 #define LED_STRIP_PIN GPIO_NUM_7   // Управление светодиодным кольцом
 
 // Параметры рулетки
@@ -53,7 +53,7 @@ static const char *TAG = "ROULETTE";
 static game_state_t game_state = STATE_IDLE;
 static volatile int encoder_count = 0;
 static int last_encoder_value = 0;
-static bool encoder_button_pressed = false;
+static int prev_clk_state = 1;
 
 // Параметры вращения
 static float wheel_speed = 0.0f;
@@ -64,10 +64,10 @@ static float target_speed = 50.0f;
 static const float acceleration = 0.1f;
 static uint64_t slowing_start_time = 0;
 static uint64_t stopped_start_time = 0;
-static uint64_t spin_start_time = 0;  // Время начала вращения
+static uint64_t spin_start_time = 0;
 
 // Таймаут для принудительной остановки (10 секунд)
-#define FORCE_STOP_TIMEOUT 10000000  // 10 секунд в микросекундах
+#define FORCE_STOP_TIMEOUT 10000000
 
 // Буферы
 static rgb_color_t led_buffer[NUM_LEDS];
@@ -83,8 +83,8 @@ static void render_frame(void);
 static void send_led_data(void);
 static int get_led_index(float position);
 static void start_spin(void);
-static void force_stop(void);  // Функция принудительной остановки
-static void encoder_isr_handler(void* arg);
+static void force_stop(void);
+static void check_encoder(void);
 static void roulette_task(void* arg);
 
 void app_main(void) {
@@ -97,50 +97,34 @@ void app_main(void) {
     xTaskCreate(roulette_task, "roulette_task", 4096, NULL, 4, NULL);
     
     ESP_LOGI(TAG, "System ready. Rotate encoder to adjust speed, press BUTTON (GPIO8) to spin");
-}
-
-// Обработчик энкодера
-static void IRAM_ATTR encoder_isr_handler(void* arg) {
-    static int last_a = 1;
-    
-    int a = gpio_get_level(ENCODER_CLK);
-    int b = gpio_get_level(ENCODER_DT);
-    
-    if (a != last_a) {
-        if (b != a) {
-            encoder_count++;
-        } else {
-            encoder_count--;
-        }
-        last_a = a;
-    }
+    ESP_LOGI(TAG, "Current target speed: %.1f°/s", target_speed);
+    ESP_LOGI(TAG, "Encoder pins: CLK=GPIO%d, DT=GPIO%d, SW=GPIO%d", ENCODER_CLK, ENCODER_DT, ENCODER_SW);
 }
 
 static void init_gpio(void) {
-    // Кнопка запуска - ПРОСТАЯ НАСТРОЙКА как в примере
+    ESP_LOGI(TAG, "Initializing GPIO...");
+    
+    // Кнопка запуска
     gpio_set_direction(BUTTON_PIN, GPIO_MODE_INPUT);
     gpio_pullup_en(BUTTON_PIN);
     
     // Энкодер
-    gpio_reset_pin(ENCODER_CLK);
     gpio_set_direction(ENCODER_CLK, GPIO_MODE_INPUT);
     gpio_pullup_en(ENCODER_CLK);
     
-    gpio_reset_pin(ENCODER_DT);
     gpio_set_direction(ENCODER_DT, GPIO_MODE_INPUT);
     gpio_pullup_en(ENCODER_DT);
     
     // Кнопка энкодера
-    gpio_reset_pin(ENCODER_SW);
     gpio_set_direction(ENCODER_SW, GPIO_MODE_INPUT);
     gpio_pullup_en(ENCODER_SW);
     
-    gpio_install_isr_service(0);
-    gpio_isr_handler_add(ENCODER_CLK, encoder_isr_handler, NULL);
-    gpio_isr_handler_add(ENCODER_DT, encoder_isr_handler, NULL);
+    // Читаем начальное состояние CLK (это важно!)
+    prev_clk_state = gpio_get_level(ENCODER_CLK);
+    
+    ESP_LOGI(TAG, "GPIO initialized. Initial CLK state: %d", prev_clk_state);
 }
 
-// Инициализация RMT
 static void init_rmt(void) {
     rmt_config_t config = {
         .rmt_mode = RMT_MODE_TX,
@@ -181,7 +165,6 @@ static void init_led_strip(void) {
     }
 }
 
-// Отправка данных через RMT
 static void send_led_data(void) {
     uint32_t rmt_index = 0;
     
@@ -215,16 +198,37 @@ static void send_led_data(void) {
     rmt_wait_tx_done(RMT_TX_CHANNEL, portMAX_DELAY);
 }
 
+// Функция проверки энкодера (по примеру из схемы)
+static void check_encoder(void) {
+    int clk_state = gpio_get_level(ENCODER_CLK);
+    
+    // Если состояние CLK изменилось И стал HIGH (передний фронт)
+    if (clk_state != prev_clk_state && clk_state == 1) {
+        int dt_state = gpio_get_level(ENCODER_DT);
+        
+        if (dt_state == 1) {
+            // Вращение против часовой стрелки
+            encoder_count--;
+            ESP_LOGI(TAG, "Encoder: Counter-clockwise, count=%d", encoder_count);
+        } else {
+            // Вращение по часовой стрелке
+            encoder_count++;
+            ESP_LOGI(TAG, "Encoder: Clockwise, count=%d", encoder_count);
+        }
+    }
+    
+    prev_clk_state = clk_state;
+}
+
 static void roulette_task(void* arg) {
-    const TickType_t delay_ms = 16 / portTICK_PERIOD_MS;
-    bool last_button_state = true; // Изначально HIGH (кнопка не нажата)
+    const TickType_t delay_ms = 10 / portTICK_PERIOD_MS;
+    bool last_button_state = true;
     
     while (1) {
-        // ПРОСТАЯ ПРОВЕРКА КНОПКИ как в примере
+        // Проверка кнопки запуска
         int button_state = gpio_get_level(BUTTON_PIN);
         
         if (button_state == 0 && last_button_state == 1) {
-            // Кнопка только что нажата (переход с HIGH на LOW)
             ESP_LOGI(TAG, "Button pressed!");
             
             if (game_state == STATE_IDLE || game_state == STATE_FINAL_STOP) {
@@ -234,14 +238,26 @@ static void roulette_task(void* arg) {
         
         last_button_state = button_state;
         
-        // Энкодер - только в режиме ожидания
+        // Проверка энкодера
+        check_encoder();
+        
+        // Обновление скорости на основе энкодера (только в режиме ожидания)
         if (game_state == STATE_IDLE || game_state == STATE_FINAL_STOP) {
-            int encoder_change = encoder_count - last_encoder_value;
+            int current_encoder = encoder_count;
+            int encoder_change = current_encoder - last_encoder_value;
+            
             if (encoder_change != 0) {
+                ESP_LOGI(TAG, "Encoder change: %d, total count: %d", encoder_change, current_encoder);
+                
+                // Меняем целевую скорость
                 target_speed += encoder_change * 2.0f;
-                target_speed = fmaxf(10.0f, fminf(target_speed, 200.0f));
-                ESP_LOGI(TAG, "Speed: %.1f°/s", target_speed);
-                last_encoder_value = encoder_count;
+                
+                // Ограничиваем диапазон
+                if (target_speed < 10.0f) target_speed = 10.0f;
+                if (target_speed > 200.0f) target_speed = 200.0f;
+                
+                ESP_LOGI(TAG, "New target speed: %.1f°/s", target_speed);
+                last_encoder_value = current_encoder;
             }
         }
         
@@ -258,24 +274,21 @@ static void start_spin(void) {
     wheel_speed = target_speed;
     ball_speed = -target_speed * 1.2f;
     slowing_start_time = esp_timer_get_time();
-    spin_start_time = esp_timer_get_time();  // Запоминаем время старта
-    ESP_LOGI(TAG, "Spin started! Speed: %.1f°/s", target_speed);
+    spin_start_time = esp_timer_get_time();
+    ESP_LOGI(TAG, "Spin started! Target speed: %.1f°/s", target_speed);
+    ESP_LOGI(TAG, "Actual wheel speed: %.1f°/s, ball speed: %.1f°/s", wheel_speed, ball_speed);
     ESP_LOGI(TAG, "Force stop in 10 seconds");
 }
 
 static void force_stop(void) {
-    // ПРИНУДИТЕЛЬНАЯ ОСТАНОВКА
-    // НЕ меняем ball_position! Оставляем его там, где он уже находится
     wheel_speed = 0.0f;
     ball_speed = 0.0f;
     
     game_state = STATE_FINAL_STOP;
     
-    // Определяем на каком светодиоде остановился шарик
     int ball_led = get_led_index(ball_position);
     ESP_LOGI(TAG, "FORCE STOP! Ball stopped at LED %d (position: %.2f°)", ball_led, ball_position);
     
-    // Определяем цвет выигрышного сектора
     int wheel_offset = get_led_index(wheel_position);
     int source_pos = (NUM_LEDS + ball_led - wheel_offset) % NUM_LEDS;
     
@@ -299,7 +312,6 @@ static void update_rotation(void) {
     
     float delta_time = (now - last_update_time) / 1000000.0f;
     
-    // Проверка таймаута 10 секунд
     if ((game_state == STATE_SPINNING || game_state == STATE_SLOWING || game_state == STATE_STOPPED) &&
         (now - spin_start_time > FORCE_STOP_TIMEOUT)) {
         ESP_LOGI(TAG, "10 second timeout reached, forcing stop!");
@@ -309,7 +321,6 @@ static void update_rotation(void) {
     switch (game_state) {
         case STATE_IDLE:
         case STATE_FINAL_STOP:
-            // Полная остановка - ничего не делаем
             break;
             
         case STATE_SPINNING:
@@ -323,38 +334,29 @@ static void update_rotation(void) {
             wheel_speed -= acceleration * 0.5f;
             ball_speed += acceleration * 0.4f;
             
-            // Если скорости стали очень близки
             if (fabsf(wheel_speed + ball_speed) < 2.0f) {
                 wheel_speed = 3.0f;
                 ball_speed = -3.0f;
                 game_state = STATE_STOPPED;
                 stopped_start_time = now;
-                
-                // ЗАПОМИНАЕМ текущую позицию шарика, а не выбираем случайную!
-                ESP_LOGI(TAG, "Ball slowing down at LED %d", get_led_index(ball_position));
             }
             break;
             
         case STATE_STOPPED:
-            // Быстрое замедление до полной остановки за 0.5 секунды
             if (now - stopped_start_time < 500000) {
                 wheel_speed *= 0.8f;
                 ball_speed *= 0.8f;
                 
-                // Если скорости стали очень малы, останавливаем полностью
                 if (fabsf(wheel_speed) < 0.5f) wheel_speed = 0.0f;
                 if (fabsf(ball_speed) < 0.5f) ball_speed = 0.0f;
             } else {
-                // Останавливаем полностью
                 wheel_speed = 0.0f;
                 ball_speed = 0.0f;
                 game_state = STATE_FINAL_STOP;
                 
-                // Логируем финальную позицию
                 int ball_led = get_led_index(ball_position);
                 ESP_LOGI(TAG, "Fully stopped at LED %d. Ready for next spin", ball_led);
                 
-                // Определяем цвет выигрышного сектора
                 int wheel_offset = get_led_index(wheel_position);
                 int source_pos = (NUM_LEDS + ball_led - wheel_offset) % NUM_LEDS;
                 
@@ -369,11 +371,9 @@ static void update_rotation(void) {
             break;
     }
     
-    // Обновление позиций ВСЕГДА
     wheel_position += wheel_speed * delta_time;
     ball_position += ball_speed * delta_time;
     
-    // Нормализация углов
     wheel_position = fmodf(wheel_position, 360.0f);
     if (wheel_position < 0) wheel_position += 360.0f;
     
@@ -386,27 +386,20 @@ static void update_rotation(void) {
 static void render_frame(void) {
     int wheel_offset = get_led_index(wheel_position);
     
-    // Отображаем колесо рулетки
     for (int i = 0; i < NUM_LEDS; i++) {
         int source_pos = (NUM_LEDS + i - wheel_offset) % NUM_LEDS;
         display_buffer[i] = led_buffer[source_pos];
     }
     
-    // Отображаем шарик
     int ball_led = get_led_index(ball_position);
-    
-    // Шарик всегда белый
     display_buffer[ball_led] = (rgb_color_t){255, 255, 255};
     
-    // Если всё остановилось, делаем дополнительную индикацию
     if (game_state == STATE_FINAL_STOP) {
-        // Ярче подсвечиваем выигрышный сектор
         int winning_led = get_led_index(ball_position);
         
         for (int i = 0; i < NUM_LEDS; i++) {
             int source_pos = (NUM_LEDS + i - wheel_offset) % NUM_LEDS;
             if (source_pos == (winning_led - wheel_offset + NUM_LEDS) % NUM_LEDS) {
-                // Увеличиваем яркость выигрышного сектора
                 display_buffer[i].r = (uint8_t)fminf(display_buffer[i].r * 2.0f, 255);
                 display_buffer[i].g = (uint8_t)fminf(display_buffer[i].g * 2.0f, 255);
                 display_buffer[i].b = (uint8_t)fminf(display_buffer[i].b * 2.0f, 255);
