@@ -53,10 +53,7 @@ static const char *TAG = "ROULETTE";
 static game_state_t game_state = STATE_IDLE;
 static volatile int encoder_count = 0;
 static int last_encoder_value = 0;
-static bool button_pressed = false;
 static bool encoder_button_pressed = false;
-static uint64_t last_button_debounce_time = 0;
-static const uint64_t debounce_delay = 50000;
 
 // Параметры вращения
 static float wheel_speed = 0.0f;
@@ -120,11 +117,9 @@ static void IRAM_ATTR encoder_isr_handler(void* arg) {
 }
 
 static void init_gpio(void) {
-    // Кнопка запуска
-    gpio_reset_pin(BUTTON_PIN);
+    // Кнопка запуска - ПРОСТАЯ НАСТРОЙКА как в примере
     gpio_set_direction(BUTTON_PIN, GPIO_MODE_INPUT);
-    gpio_pullup_dis(BUTTON_PIN);
-    gpio_pulldown_en(BUTTON_PIN);
+    gpio_pullup_en(BUTTON_PIN);
     
     // Энкодер
     gpio_reset_pin(ENCODER_CLK);
@@ -222,22 +217,22 @@ static void send_led_data(void) {
 
 static void roulette_task(void* arg) {
     const TickType_t delay_ms = 16 / portTICK_PERIOD_MS;
+    bool last_button_state = true; // Изначально HIGH (кнопка не нажата)
     
     while (1) {
-        uint64_t now = esp_timer_get_time();
+        // ПРОСТАЯ ПРОВЕРКА КНОПКИ как в примере
+        int button_state = gpio_get_level(BUTTON_PIN);
         
-        // Кнопка запуска (GPIO8)
-        if (gpio_get_level(BUTTON_PIN) == 0) {
-            if (!button_pressed && (now - last_button_debounce_time) > debounce_delay) {
-                button_pressed = true;
-                last_button_debounce_time = now;
-                if (game_state == STATE_IDLE || game_state == STATE_FINAL_STOP) {
-                    start_spin();
-                }
+        if (button_state == 0 && last_button_state == 1) {
+            // Кнопка только что нажата (переход с HIGH на LOW)
+            ESP_LOGI(TAG, "Button pressed!");
+            
+            if (game_state == STATE_IDLE || game_state == STATE_FINAL_STOP) {
+                start_spin();
             }
-        } else {
-            button_pressed = false;
         }
+        
+        last_button_state = button_state;
         
         // Энкодер - только в режиме ожидания
         if (game_state == STATE_IDLE || game_state == STATE_FINAL_STOP) {
